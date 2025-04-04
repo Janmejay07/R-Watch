@@ -3,22 +3,21 @@ import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
 
-// Load environment variables
 dotenv.config();
 
 const app = express();
-app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// Connect to MongoDB
+// MongoDB connection
 const mongoURI = process.env.MONGO_URI;
 mongoose
   .connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
-// New activity schema
-const activitySchema = new mongoose.Schema({
+// Define Schema
+const ActivitySchema = new mongoose.Schema({
   site: { type: String, required: true },
   timeSpent: { type: Number, required: true },
   startTime: Date,
@@ -26,21 +25,20 @@ const activitySchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 });
 
-// New user schema
-const userUsageSchema = new mongoose.Schema({
+const UserUsageSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
-  activities: [activitySchema]
+  activities: [ActivitySchema]
 });
 
-const UserUsage = mongoose.model("UserUsage", userUsageSchema);
+const UserUsage = mongoose.model("UserUsage", UserUsageSchema);
 
-// POST: Log usage (store in activities array)
+// POST: Log Usage (on every tab switch)
 app.post("/log-usage", async (req, res) => {
   try {
     const { username, site, timeSpent, startTime, endTime } = req.body;
 
     if (!username || !site || !timeSpent) {
-      return res.status(400).json({ error: "Missing required fields" });
+      return res.status(400).json({ error: "Missing required fields: username, site, timeSpent" });
     }
 
     const activity = {
@@ -51,61 +49,62 @@ app.post("/log-usage", async (req, res) => {
       timestamp: new Date()
     };
 
-    // Add or update user with new activity
-    const updated = await UserUsage.findOneAndUpdate(
+    // Find the user document or create a new one
+    const updatedUser = await UserUsage.findOneAndUpdate(
       { username },
       { $push: { activities: activity } },
-      { upsert: true, new: true }
+      { new: true, upsert: true }
     );
 
-    res.status(201).json({ message: "Usage logged", data: updated });
+    res.status(201).json({ message: "Activity logged", user: updatedUser });
   } catch (error) {
     console.error("Error logging usage:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// GET: Fetch all usage per user
+// GET: All usage data (grouped by user)
 app.get("/usage", async (req, res) => {
   try {
     const { username } = req.query;
-    const query = username ? { username } : {};
 
-    const usageData = await UserUsage.find(query).sort({ username: 1 });
-    res.json(usageData);
+    let query = {};
+    if (username) query.username = username;
+
+    const users = await UserUsage.find(query);
+    res.json(users);
   } catch (error) {
-    console.error("Error fetching usage:", error);
+    console.error("Error fetching usage data:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// GET: Usage summary (total time per site per user per day)
+// GET: Summary (total time per site per user)
 app.get("/usage/summary", async (req, res) => {
   try {
     const { username } = req.query;
 
-    const matchStage = username ? { username } : {};
+    const matchStage = username ? { $match: { username } } : {};
     const pipeline = [
-      { $match: matchStage },
+      matchStage,
       { $unwind: "$activities" },
       {
         $group: {
           _id: {
             username: "$username",
-            site: "$activities.site",
-            date: { $dateToString: { format: "%Y-%m-%d", date: "$activities.timestamp" } }
+            site: "$activities.site"
           },
           totalTime: { $sum: "$activities.timeSpent" },
-          visits: { $count: {} }
+          visits: { $sum: 1 }
         }
       },
-      { $sort: { "_id.date": -1, totalTime: -1 } }
+      { $sort: { "totalTime": -1 } }
     ];
 
     const summary = await UserUsage.aggregate(pipeline);
     res.json(summary);
   } catch (error) {
-    console.error("Error generating summary:", error);
+    console.error("Error summarizing usage:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -121,6 +120,6 @@ app.get("/users", async (req, res) => {
   }
 });
 
-// Start server
+// Server start
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
