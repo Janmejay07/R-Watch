@@ -3,121 +3,124 @@ import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
 
-// Load environment variables from .env file
+// Load environment variables
 dotenv.config();
 
 const app = express();
-app.use(cors({ origin: "*", methods: ["GET", "POST"] })); // Configurable CORS
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 
-// MongoDB Connection
+// Connect to MongoDB
 const mongoURI = process.env.MONGO_URI;
 mongoose
-    .connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true })
-    .then(() => console.log("✅ MongoDB Connected"))
-    .catch((err) => console.error("❌ MongoDB Connection Error:", err));
+  .connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
-// Define Usage Schema
-const UsageSchema = new mongoose.Schema({
-    username: { type: String, required: true, index: true },
-    site: { type: String, required: true },
-    timeSpent: { type: Number, required: true },
-    startTime: Date,
-    endTime: Date,
-    timestamp: { type: Date, default: Date.now }
+// New activity schema
+const activitySchema = new mongoose.Schema({
+  site: { type: String, required: true },
+  timeSpent: { type: Number, required: true },
+  startTime: Date,
+  endTime: Date,
+  timestamp: { type: Date, default: Date.now }
 });
 
-const Usage = mongoose.model("Usage", UsageSchema);
+// New user schema
+const userUsageSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  activities: [activitySchema]
+});
 
-// POST: Log Usage
+const UserUsage = mongoose.model("UserUsage", userUsageSchema);
+
+// POST: Log usage (store in activities array)
 app.post("/log-usage", async (req, res) => {
-    try {
-        const { username, site, timeSpent, startTime, endTime } = req.body;
+  try {
+    const { username, site, timeSpent, startTime, endTime } = req.body;
 
-        if (!username || !site || !timeSpent) {
-            return res.status(400).json({ error: "Missing required fields: username, site, timeSpent" });
-        }
-
-        await Usage.create({
-            username,
-            site,
-            timeSpent,
-            startTime: startTime ? new Date(startTime) : undefined,
-            endTime: endTime ? new Date(endTime) : undefined
-        });
-
-        res.status(201).json({ message: "Usage logged successfully" });
-    } catch (error) {
-        console.error("Error logging usage:", error);
-        res.status(500).json({ error: "Internal server error" });
+    if (!username || !site || !timeSpent) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
+
+    const activity = {
+      site,
+      timeSpent,
+      startTime: startTime ? new Date(startTime) : undefined,
+      endTime: endTime ? new Date(endTime) : undefined,
+      timestamp: new Date()
+    };
+
+    // Add or update user with new activity
+    const updated = await UserUsage.findOneAndUpdate(
+      { username },
+      { $push: { activities: activity } },
+      { upsert: true, new: true }
+    );
+
+    res.status(201).json({ message: "Usage logged", data: updated });
+  } catch (error) {
+    console.error("Error logging usage:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// GET: Fetch Usage Data with Filtering
+// GET: Fetch all usage per user
 app.get("/usage", async (req, res) => {
-    try {
-        const { username, startDate, endDate, site } = req.query;
-        const query = {};
+  try {
+    const { username } = req.query;
+    const query = username ? { username } : {};
 
-        if (username) query.username = username;
-        if (site) query.site = site;
-        if (startDate || endDate) {
-            query.timestamp = {};
-            if (startDate) query.timestamp.$gte = new Date(startDate);
-            if (endDate) query.timestamp.$lte = new Date(endDate);
-        }
-
-        const usageData = await Usage.find(query).sort({ timestamp: -1 });
-        res.json(usageData);
-    } catch (error) {
-        console.error("Error fetching usage data:", error);
-        res.status(500).json({ error: "Internal server error" });
-    }
+    const usageData = await UserUsage.find(query).sort({ username: 1 });
+    res.json(usageData);
+  } catch (error) {
+    console.error("Error fetching usage:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// GET: Usage Summary Grouped by Username & Site
+// GET: Usage summary (total time per site per user per day)
 app.get("/usage/summary", async (req, res) => {
-    try {
-        const { username } = req.query;
-        const pipeline = [];
+  try {
+    const { username } = req.query;
 
-        if (username) {
-            pipeline.push({ $match: { username } });
+    const matchStage = username ? { username } : {};
+    const pipeline = [
+      { $match: matchStage },
+      { $unwind: "$activities" },
+      {
+        $group: {
+          _id: {
+            username: "$username",
+            site: "$activities.site",
+            date: { $dateToString: { format: "%Y-%m-%d", date: "$activities.timestamp" } }
+          },
+          totalTime: { $sum: "$activities.timeSpent" },
+          visits: { $count: {} }
         }
+      },
+      { $sort: { "_id.date": -1, totalTime: -1 } }
+    ];
 
-        pipeline.push({
-            $group: {
-                _id: {
-                    username: "$username",
-                    site: "$site",
-                    date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }
-                },
-                totalTime: { $sum: "$timeSpent" },
-                visits: { $count: {} }
-            }
-        });
-
-        pipeline.push({ $sort: { "_id.date": -1, "totalTime": -1 } });
-
-        const summary = await Usage.aggregate(pipeline);
-        res.json(summary);
-    } catch (error) {
-        console.error("Error generating summary:", error);
-        res.status(500).json({ error: "Internal server error" });
-    }
+    const summary = await UserUsage.aggregate(pipeline);
+    res.json(summary);
+  } catch (error) {
+    console.error("Error generating summary:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// GET: List of Users
+// GET: List of users
 app.get("/users", async (req, res) => {
-    try {
-        const users = await Usage.distinct("username");
-        res.json(users);
-    } catch (error) {
-        console.error("Error fetching users:", error);
-        res.status(500).json({ error: "Internal server error" });
-    }
+  try {
+    const users = await UserUsage.distinct("username");
+    res.json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// Start Server
+// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
