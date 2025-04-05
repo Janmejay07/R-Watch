@@ -16,13 +16,20 @@ mongoose
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
+// Utility: Get current IST string
+function getISTTimeString(date = new Date()) {
+  const istOffset = 330; // IST is UTC+5:30
+  const istDate = new Date(date.getTime() + istOffset * 60000);
+  return istDate.toISOString().replace("T", " ").slice(0, 23);
+}
+
 // Define Schema
 const ActivitySchema = new mongoose.Schema({
   site: { type: String, required: true },
   timeSpent: { type: Number, required: true },
-  startTime: Date,
-  endTime: Date,
-  timestamp: { type: Date, default: Date.now }
+  startTime: String,
+  endTime: String,
+  timestamp: { type: String, default: () => getISTTimeString() }
 });
 
 const UserUsageSchema = new mongoose.Schema({
@@ -32,7 +39,7 @@ const UserUsageSchema = new mongoose.Schema({
 
 const UserUsage = mongoose.model("UserUsage", UserUsageSchema);
 
-// POST: Log Usage (on every tab switch)
+// POST: Log Usage
 app.post("/log-usage", async (req, res) => {
   try {
     const { username, site, timeSpent, startTime, endTime } = req.body;
@@ -44,12 +51,11 @@ app.post("/log-usage", async (req, res) => {
     const activity = {
       site,
       timeSpent,
-      startTime: startTime ? new Date(startTime) : undefined,
-      endTime: endTime ? new Date(endTime) : undefined,
-      timestamp: new Date()
+      startTime,
+      endTime,
+      timestamp: getISTTimeString()
     };
 
-    // Find the user document or create a new one
     const updatedUser = await UserUsage.findOneAndUpdate(
       { username },
       { $push: { activities: activity } },
@@ -63,14 +69,11 @@ app.post("/log-usage", async (req, res) => {
   }
 });
 
-// GET: All usage data (grouped by user)
+// GET: All usage data
 app.get("/usage", async (req, res) => {
   try {
     const { username } = req.query;
-
-    let query = {};
-    if (username) query.username = username;
-
+    const query = username ? { username } : {};
     const users = await UserUsage.find(query);
     res.json(users);
   } catch (error) {
@@ -79,7 +82,7 @@ app.get("/usage", async (req, res) => {
   }
 });
 
-// GET: Summary (total time per site per user)
+// GET: Summary
 app.get("/usage/summary", async (req, res) => {
   try {
     const { username } = req.query;
@@ -98,7 +101,7 @@ app.get("/usage/summary", async (req, res) => {
           visits: { $sum: 1 }
         }
       },
-      { $sort: { "totalTime": -1 } }
+      { $sort: { totalTime: -1 } }
     ];
 
     const summary = await UserUsage.aggregate(pipeline);
